@@ -224,34 +224,40 @@ def detect_tier(user_budget):
     else:
         return "affordable"
 
-def get_notable_family_feature(county):
-    """
-    Generate a notable family feature description for a county based on its characteristics.
-    
-    Args:
-        county (dict): County data with tags and census variables
-        
-    Returns:
-        str: Notable family feature description
-    """
+def get_notable_family_feature(county, state_medians=None):
     tags = county.get("tags", {})
-    population = county.get("B01003_001E", 0)
-    affordability = tags.get("affordability_score", float("inf"))
-    homeownership = tags.get("homeownership_rate", 0)  # Fixed: look in tags, not county
+    home_value = county.get("B25077_001E", 0)
+    degree_rate = county.get('college_degree_rate', 0)
+    growth = tags.get("growth_potential", False)
+    homeownership = tags.get("homeownership_rate", 0)
+    pop = county.get("B01003_001E", 0)
+    feature_parts = []
 
-    if tags.get("family_friendly") and homeownership > 65:
-        return "High income & stable homeownership"
+    # Use default state_medians if not provided
+    if state_medians is None:
+        state_medians = {"home_value": 0, "degree_rate": 0}
 
-    if tags.get("budget_friendly") and affordability < 3.0 and population < 100000:
-        return "Affordable starter homes"
+    # Luxury/education
+    if degree_rate > state_medians["degree_rate"] + 10:
+        feature_parts.append("Highly educated, top-rated schools")
+    if tags.get("family_friendly") and tags.get("community_type") == "urban":
+        feature_parts.append("Urban family hub")
+    elif tags.get("family_friendly") and tags.get("community_type") == "suburban":
+        feature_parts.append("Suburban family lifestyle")
+    if growth:
+        feature_parts.append("Booming job market")
+    if homeownership > 75:
+        feature_parts.append("High homeownership, stable community")
+    if home_value > state_medians["home_value"] * 2:
+        feature_parts.append("Prestige real estate")
 
-    if tags.get("community_type") == "suburban" and 50000 <= population <= 150000 and tags.get("family_friendly"):
-        return "Family-friendly suburbs"
-
-    if tags.get("growth_potential") and tags.get("community_type") == "urban":
-        return "Metro growth opportunity"
-
-    return "Solid housing options"
+    # Fallbacks
+    if not feature_parts:
+        if tags.get("budget_friendly"):
+            feature_parts.append("Solid housing value")
+        else:
+            feature_parts.append("General family amenities")
+    return "; ".join(feature_parts)
 
 def compute_homeownership_rate(county):
     """

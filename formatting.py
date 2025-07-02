@@ -69,22 +69,80 @@ def format_comparison_summary_table(name1, name2, counties1, counties2):
         if isinstance(val, (float, int)):
             return f"${val:,}" if val > 1000 else f"{val}%"
         return str(val)
+    
+    # Format population numbers separately (no dollar signs)
+    pop1 = f"{counties1[0]['B01003_001E']:,}" if counties1 else "—"
+    pop2 = f"{counties2[0]['B01003_001E']:,}" if counties2 else "—"
+    
+    # Generate dynamic winner/notes
+    def get_home_value_note():
+        h1, h2 = s1.get('B25077_001E'), s2.get('B25077_001E')
+        if h1 is None or h2 is None:
+            return "Lower is better (affordability)"
+        if h1 < h2 * 0.7:
+            return f"{name1} much more affordable; {name2} offers luxury options"
+        elif h2 < h1 * 0.7:
+            return f"{name2} much more affordable; {name1} offers luxury options"
+        elif h1 < h2:
+            return f"{name1} more affordable for families"
+        else:
+            return f"{name2} more affordable for families"
+    
+    def get_income_note():
+        i1, i2 = s1.get('B19013_001E'), s2.get('B19013_001E')
+        if i1 is None or i2 is None:
+            return ""
+        diff = abs(i1 - i2) / max(i1, i2)
+        if diff < 0.1:
+            return "Similar income levels—both offer good earning potential"
+        elif i1 > i2:
+            return f"{name1} higher income—more affluent communities"
+        else:
+            return f"{name2} higher income—more affluent communities"
+    
+    def get_homeownership_note():
+        h1, h2 = s1.get('homeownership_rate'), s2.get('homeownership_rate')
+        if h1 is None or h2 is None:
+            return ""
+        diff = abs(h1 - h2)
+        if diff < 2:
+            return "Both states show strong homeowner stability"
+        elif h1 > h2:
+            return f"{name1} higher—indicates more stable communities"
+        else:
+            return f"{name2} higher—indicates more stable communities"
+    
+    def get_population_note():
+        p1 = counties1[0]['B01003_001E'] if counties1 else 0
+        p2 = counties2[0]['B01003_001E'] if counties2 else 0
+        if p1 > 500000 and p2 < 100000:
+            return f"{name1}: major metro amenities; {name2}: small-town charm"
+        elif p2 > 500000 and p1 < 100000:
+            return f"{name2}: major metro amenities; {name1}: small-town charm"
+        elif p1 > p2 * 2:
+            return f"{name1} offers big-city advantages—more schools, healthcare, career options"
+        elif p2 > p1 * 2:
+            return f"{name2} offers big-city advantages—more schools, healthcare, career options"
+        else:
+            return "Larger population = more amenities & opportunities"
+    
     return (
         f"| Metric | {name1} | {name2} | Winner/Notes |\n"
         f"|--------|---------|---------|---------------|\n"
-        f"| Median Home Value | {pretty(s1.get('B25077_001E'))} | {pretty(s2.get('B25077_001E'))} | Lower is better (affordability) |\n"
-        f"| Median Household Income | {pretty(s1.get('B19013_001E'))} | {pretty(s2.get('B19013_001E'))} | |\n"
-        f"| Homeownership Rate | {pretty(s1.get('homeownership_rate'))} | {pretty(s2.get('homeownership_rate'))} | |\n"
-        f"| Top County (Family Focus) | {counties1[0]['name'] if counties1 else '—'} | {counties2[0]['name'] if counties2 else '—'} | |\n"
-        f"| Avg. School Quality* | {pretty(s1.get('college_degree_rate'))} | {pretty(s2.get('college_degree_rate'))} | (proxy: college grad rate) |\n"
-        f"| Population (Top County) | {pretty(counties1[0]['B01003_001E']) if counties1 else '—'} | {pretty(counties2[0]['B01003_001E']) if counties2 else '—'} | |\n"
+        f"| Median Home Value | {pretty(s1.get('B25077_001E'))} | {pretty(s2.get('B25077_001E'))} | {get_home_value_note()} |\n"
+        f"| Median Household Income | {pretty(s1.get('B19013_001E'))} | {pretty(s2.get('B19013_001E'))} | {get_income_note()} |\n"
+        f"| Homeownership Rate | {pretty(s1.get('homeownership_rate'))} | {pretty(s2.get('homeownership_rate'))} | {get_homeownership_note()} |\n"
+        f"| Top County (Family Focus) | {counties1[0]['name'] if counties1 else '—'} | {counties2[0]['name'] if counties2 else '—'} | Best family counties for each state |\n"
+        f"| Population (Top County) | {pop1} | {pop2} | {get_population_note()} |\n"
     )
 
 def format_county_table(counties):
     """Format county data as a markdown table"""
-    lines = "| Rank | County | Median Home Value | HH Income | College Degree Rate | Notable Feature |\n"
-    lines += "|------|--------|-------------------|-----------|-------------------|------------------|\n"
+    lines = "| Rank | County | Median Home Value | HH Income | H.O. Rate | College Degree Rate | Notable Feature |\n"
+    lines += "|------|--------|-------------------|-----------|-----------|-------------------|------------------|\n"
     for i, county in enumerate(counties[:3], 1):
+        homeownership = county.get('tags', {}).get('homeownership_rate')
+        homeownership_str = f"{homeownership}%" if homeownership is not None else "N/A"
         college_rate = county.get('college_degree_rate', 0)
         college_rate_str = f"{college_rate}%" if college_rate > 0 else "N/A"
         notable_feature = county.get('tags', {}).get('notable_family_feature', 'Solid housing options')
@@ -92,6 +150,7 @@ def format_county_table(counties):
             f"| {i} | {county['name']} | "
             f"${county.get('B25077_001E', 0):,} | "
             f"${county.get('B19013_001E', 0):,} | "
+            f"{homeownership_str} | "
             f"{college_rate_str} | "
             f"{notable_feature} |\n"
         )
