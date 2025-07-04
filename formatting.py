@@ -203,10 +203,42 @@ def get_county_summary(county):
     else:
         return "🏞️ Rural calm with solid income"
 
+def get_fallback_note(counties, user_budget, user_priority):
+    """Generate a fallback note when no counties meet strict filters"""
+    if not counties:
+        return "⚠️ **Note:** No counties met the strict filtering criteria for your preferences. Showing the best available options based on your criteria."
+    
+    # Check if we have very few counties (indicating strict filtering)
+    if len(counties) <= 3:
+        # Convert user_budget to int for comparison
+        try:
+            budget_int = int(user_budget) if isinstance(user_budget, str) else user_budget
+            tier = "luxury" if budget_int >= 1000000 else "affordable"
+            if tier in ("luxury", "ultra_luxury") and user_priority.get("community_type") == "urban":
+                return "ℹ️ **Note:** Limited large urban counties found—showing best available luxury options based on your criteria."
+            elif user_priority.get("community_type") == "rural":
+                return "ℹ️ **Note:** Limited rural counties found—showing best available options based on your criteria."
+        except (ValueError, TypeError):
+            # If conversion fails, use default logic
+            pass
+    
+    return ""
+
 def format_comparison_report(name1, name2, income, counties1, counties2, insights, recommendation):
     """Format the complete comparison report"""
     date = datetime.now().strftime("%B %d, %Y")
     summary_table = format_comparison_summary_table(name1, name2, counties1, counties2)
+    
+    # Convert income to int for comparison
+    try:
+        income_int = int(income) if isinstance(income, str) else income
+        is_luxury = income_int >= 1000000
+    except (ValueError, TypeError):
+        is_luxury = False
+    
+    # Generate fallback notes
+    fallback_note1 = get_fallback_note(counties1, income, {"community_type": "urban" if is_luxury else None})
+    fallback_note2 = get_fallback_note(counties2, income, {"community_type": "urban" if is_luxury else None})
     
     final_report = f"""🏡 Residential Homebuyer State Comparison Report
 
@@ -222,9 +254,11 @@ def format_comparison_report(name1, name2, income, counties1, counties2, insight
 
 ### {name1}
 {format_county_table(counties1)}
+{fallback_note1}
 
 ### {name2}
 {format_county_table(counties2)}
+{fallback_note2}
 
 ## 💡 Key Takeaways
 
@@ -241,6 +275,16 @@ def format_single_state_report(state_name, income, counties, insights, recommend
     date = datetime.now().strftime("%B %d, %Y")
     state_emoji = get_state_emoji(state_name)
     
+    # Convert income to int for comparison
+    try:
+        income_int = int(income) if isinstance(income, str) else income
+        is_luxury = income_int >= 1000000
+    except (ValueError, TypeError):
+        is_luxury = False
+    
+    # Generate fallback note
+    fallback_note = get_fallback_note(counties, income, {"community_type": "urban" if is_luxury else None})
+    
     final_report = f"""{state_emoji} Where {state_name} Families Thrive: Top 5 Counties for ${income} Buyers
 🏡 Smart & Safe — {state_name}'s Best Family Havens on a ${income} Budget
 Date: {date}
@@ -248,6 +292,8 @@ Date: {date}
 🏆 Top 5 Counties for Homebuyers in {state_name}
 
 {format_single_state_table(counties)}
+
+{fallback_note}
 
 💡 Key Insights
 {insights}

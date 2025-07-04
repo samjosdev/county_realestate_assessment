@@ -160,14 +160,13 @@ def calculate_state_medians(counties_data):
         "degree_rate": median(degree_rates)
     }
 
-def apply_dynamic_filters(counties_data, user_priority=None):
+def apply_dynamic_filters(counties_data, user_priority=None, user_budget=0):
     """
-    Apply dynamic filtering based on state medians and user preferences.
-    
+    Apply dynamic filtering based on state medians, user preferences, and budget tier.
     Args:
         counties_data (list): List of county dictionaries
-        user_priority (dict): User preferences, including rural preference
-        
+        user_priority (dict): User preferences, including rural/urban preference
+        user_budget (int): Numeric budget/income
     Returns:
         list: Filtered counties
     """
@@ -177,17 +176,27 @@ def apply_dynamic_filters(counties_data, user_priority=None):
     # Calculate state medians for dynamic thresholds
     state_medians = calculate_state_medians(counties_data)
     
-    # Check if user wants rural/remote areas
+    # Detect luxury/ultra-luxury and urban preference
     wants_rural = user_priority and user_priority.get("community_type") == "rural"
+    wants_urban = user_priority and user_priority.get("community_type") == "urban"
+    tier = detect_tier(user_budget)
     
-    # Adjust thresholds based on user preference
+    # Population threshold logic
     if wants_rural:
-        min_population = 20000  # Lower threshold for rural preference
-        min_income_ratio = 0.6  # More lenient income requirement
-        degree_rate_required = False  # Don't require degree rate for rural
+        min_population = 20000  # Lower threshold for rural
+        min_income_ratio = 0.6
+        degree_rate_required = False
+    elif wants_urban and tier in ("luxury", "ultra_luxury"):
+        min_population = 300000   # Enforce only big cities/metros
+        min_income_ratio = 0.9    # Even higher bar
+        degree_rate_required = True
+    elif tier in ("luxury", "ultra_luxury"):
+        min_population = 150000   # Mid-size and up
+        min_income_ratio = 0.9
+        degree_rate_required = True
     else:
-        min_population = 80000  # Standard threshold
-        min_income_ratio = 0.8  # 20% below state median
+        min_population = 80000
+        min_income_ratio = 0.8
         degree_rate_required = True
     
     filtered = []
@@ -195,20 +204,16 @@ def apply_dynamic_filters(counties_data, user_priority=None):
         # Population filter
         if county.get('B01003_001E', 0) < min_population:
             continue
-            
-        # Income filter - must be within reasonable range of state median
+        # Income filter
         county_income = county.get('B19013_001E', 0)
         if county_income < state_medians["income"] * min_income_ratio:
             continue
-            
-        # Education/school quality filter (skip for rural preference)
+        # School/education quality
         if degree_rate_required:
             county_degree_rate = county.get('college_degree_rate', 0)
             if county_degree_rate < state_medians["degree_rate"]:
                 continue
-        
         filtered.append(county)
-    
     return filtered
 
 def detect_tier(user_budget):
@@ -352,6 +357,13 @@ def score_county(county, user_priority, state_medians=None, user_budget=0):
     population = county.get("B01003_001E", 0)
     if population > 150_000:
         score += 1
+    
+    # Stronger urban bonus for luxury/city preferences
+    if user_priority.get("community_type") == "urban" and tier in ("luxury", "ultra_luxury"):
+        if population > 300_000:
+            score += 5  # Big bonus for large, urban counties
+        elif population < 150_000:
+            score -= 5  # Penalize small counties if luxury/city
 
     return score
 
@@ -371,6 +383,90 @@ def sort_counties_by_tags(counties, user_priority, state_medians=None, user_budg
     for county in counties:
         county["sort_score"] = score_county(county, user_priority, state_medians, user_budget)
     return sorted(counties, key=lambda c: -c["sort_score"])
+
+def parse_user_priority(user_preferences: str) -> dict:
+    """Parse user preferences into priority object for scoring."""
+    priority = {
+        "budget": True,  # Default to True since everyone cares about budget
+        "family": False,
+        "community_type": None,
+        "growth": False
+    }
+    
+    if not user_preferences:
+        return priority
+        
+    pref_lower = user_preferences.lower()
+    
+    # Check for family priorities
+    family_keywords = ["family", "children", "kids", "school", "safety", "child"]
+    if any(keyword in pref_lower for keyword in family_keywords):
+        priority["family"] = True
+        
+    # Check for community type preferences
+    if any(word in pref_lower for word in ["urban", "city", "downtown", "metropolitan"]):
+        priority["community_type"] = "urban"
+    elif any(word in pref_lower for word in ["suburban", "suburb", "neighborhood"]):
+        priority["community_type"] = "suburban"  
+    elif any(word in pref_lower for word in ["rural", "small town", "country", "quiet"]):
+        priority["community_type"] = "rural"
+        
+    # Check for growth/investment priorities
+    growth_keywords = ["growth", "investment", "job", "economic", "opportunity", "tech", "development"]
+    if any(keyword in pref_lower for keyword in growth_keywords):
+        priority["growth"] = True
+        
+    return priority
+
+def process_counties_with_tagging(counties, user_priority, state_medians, user_budget):
+    """Apply tagging, scoring and sorting to counties"""
+    if not counties:
+        return []
+    
+    # Apply dynamic filtering
+    counties = apply_dynamic_filters(counties, user_priority, user_budget)
+    
+    # Tag all remaining counties
+    for county in counties:
+        county['tags'] = tag_county(county)
+        county['tags']['notable_family_feature'] = get_notable_family_feature(county, state_medians)
+    
+    # Sort by tier-based composite score  
+    counties = sort_counties_by_tags(counties, user_priority, state_medians, user_budget)
+    
+    return counties[:25]  # Limit to top 25
+
+def extract_tool_results_from_messages(messages):
+    """Extract and parse tool results from message history"""
+    tool_results = [msg for msg in messages if hasattr(msg, 'type') and msg.type == 'tool']
+    
+    if len(tool_results) == 1:
+        # Single state result
+        content = tool_results[0].content
+        if isinstance(content, str):
+            try:
+                import json
+                return json.loads(content)
+            except json.JSONDecodeError:
+                return {}
+        return content if isinstance(content, dict) else {}
+    
+    elif len(tool_results) >= 2:
+        # Comparison results
+        results = {}
+        for i, key in enumerate(['state1', 'state2']):
+            content = tool_results[-(2-i)].content if hasattr(tool_results[-(2-i)], 'content') else {}
+            if isinstance(content, str):
+                try:
+                    import json
+                    results[key] = json.loads(content)
+                except json.JSONDecodeError:
+                    results[key] = {}
+            else:
+                results[key] = content if isinstance(content, dict) else {}
+        return results
+    
+    return {}
 
 def real_estate_investment_tool(state_fips: str, state_name: str, comparison_states: str = "", filter_bucket: str = "default") -> Dict[str, Any]:
     """Get residential real estate data for a specific state."""
@@ -434,5 +530,3 @@ def real_estate_investment_tool(state_fips: str, state_name: str, comparison_sta
         "filter_bucket": filter_bucket
     }
 
-# Removed apply_filter_bucket function - never called anywhere
-# Removed available_tools - not used (build_Graph.py creates its own)

@@ -1,12 +1,29 @@
 import gradio as gr
 import asyncio
 import os
+import uuid
 from dotenv import load_dotenv
-from build_Graph import us_census_agent, checkpointer, new_workflow_graph
+from build_Graph import USCensusAgent, checkpointer
 from langchain_core.messages import HumanMessage, AIMessage
-# Removed unused import: tools_condition
 
 load_dotenv(override=True)
+
+# Global variables to store the agent and thread_id  
+us_census_agent = None
+thread_id = None
+
+
+async def setup_graph():
+    """Setup the USCensusAgent and workflow graph once at startup"""
+    global us_census_agent, thread_id
+    if us_census_agent is None:
+        print("🔧 Setting up USCensusAgent...")
+        thread_id = f"conversation_{uuid.uuid4()}"
+        print(f"🧹 Starting fresh conversation: {thread_id}")
+        us_census_agent = USCensusAgent()
+        await us_census_agent.setup_graph()
+        print("✅ USCensusAgent ready!")
+    return us_census_agent.graph
 
 EXAMPLES = [
     "Find me a good place to buy a house in West Virginia for my family of four with $120k income",
@@ -17,55 +34,48 @@ EXAMPLES = [
 ]
 
 async def agent_chat(message, history, request: gr.Request):
-    thread_id = "default"
-    state = {"messages": []}
-    for entry in history:
-        if isinstance(entry, (list, tuple)) and len(entry) == 2:
-            human, ai = entry
-            if human:
-                state["messages"].append(HumanMessage(content=human))
-            if ai:
-                state["messages"].append(AIMessage(content=ai))
-        elif isinstance(entry, dict):
-            if entry.get('role') == 'user':
-                state["messages"].append(HumanMessage(content=entry.get('content', '')))
-            elif entry.get('role') == 'assistant':
-                state["messages"].append(AIMessage(content=entry.get('content', '')))
-    state["messages"].append(HumanMessage(content=message))
+    """
+    Simplified agent_chat function - just append the new message and let LangGraph handle the rest
+    """
+    global us_census_agent
+    # Ensure workflow graph is setup
+    print ("Calling setup graph here")
+    graph = await setup_graph()
+    
+    # Simple: just add the new user message, let add_messages handle everything
+    state = {"messages": [HumanMessage(content=message)]}
+    config = {"configurable": {"thread_id": thread_id}}
 
     try:
-        config = {"configurable": {"thread_id": thread_id}}
-        saved_state = checkpointer.get(config)
-        if saved_state and saved_state.get("values"):
-            from langgraph.types import Command
-            resume_state = saved_state["values"].copy()
-            resume_state["messages"].append(HumanMessage(content=message))
-            resume_state["tool_output"] = None
-            result = await new_workflow_graph.ainvoke(
-                Command(resume=resume_state),
-                config=config
-            )
-        else:
-            result = await new_workflow_graph.ainvoke(
-                state,
-                config=config
-            )
-        if "__interrupt__" in result:
+        print(f"🚀 Invoking workflow with new message: {message}")
+        
+        result = await graph.ainvoke(state, config=config)
+        # print (f'result after graph.ainvoke: {result}')
+        print(f"✅ Workflow completed!")
+        # print(f"🔑 Result keys: {list(result.keys())}")
+
+        # Check if workflow completed (has final_result) or is interrupted (waiting for user input)
+        if "final_result" in result:
+            # Workflow completed successfully
+            us_census_agent = None
+            return str(result["final_result"])
+        elif "__interrupt__" in result:
+            # Workflow is interrupted and waiting for user input
             interrupt_payload = result["__interrupt__"][0].value
             return interrupt_payload.get("followup_question", "Please answer the follow-up question.")
         elif "followup_question" in result:
             return str(result["followup_question"])
         else:
-            report = result.get("final_result", result.get("result", "Sorry, I couldn't generate a report."))
-            
-            # Note: LangGraph handles state management automatically
-            # Manual state reset is generally not needed and can cause API issues
-            if "final_result" in result:
-                print("🔄 Query completed - LangGraph will handle state transitions automatically")
-            
+            # Fallback
+            report = result.get("result", "Sorry, I couldn't generate a report.")
+            us_census_agent = None
             return str(report)
+            
     except Exception as e:
-        print(f"Error in agent_chat: {e}")
+        print(f"❌ Error type: {type(e).__name__}")
+        print(f"❌ Error message: {e}")
+        import traceback
+        traceback.print_exc()
         return f"Sorry, I encountered an error: {str(e)}"
 
 theme = gr.themes.Soft(

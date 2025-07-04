@@ -20,7 +20,7 @@ from prompts import (
     PARSE_FOUR_FACTORS_PROMPT
 )
 from langchain_core.output_parsers import JsonOutputParser
-from tools import real_estate_investment_tool, tag_county, sort_counties_by_tags, get_notable_family_feature, apply_dynamic_filters, calculate_state_medians, detect_tier, score_county
+from tools import real_estate_investment_tool, process_counties_with_tagging, extract_tool_results_from_messages, detect_tier, parse_user_priority, calculate_state_medians
 from langgraph.prebuilt import tools_condition, ToolNode
 from langchain.prompts import PromptTemplate
 from formatting import format_single_state_report, format_comparison_report
@@ -53,14 +53,14 @@ class USCensusAgent(BaseModel):
     tools: Any = Field(default=None, init=False)
     single_state_tool_node: Any = Field(default=None, init=False)
     comparison_tool_node: Any = Field(default=None, init=False)
+    needs_followup: Any = Field(default=None, init=False)
 
     class Config:
         arbitrary_types_allowed = True
 
     async def setup_graph(self):
         """
-        Setup function that initializes LLMs, binds them with tools, creates ToolNode,
-        and then builds the workflow graph.
+        Setup function that initializes LLMs, binds them with tools, and builds the graph.
         
         Returns:
             Compiled graph ready for execution
@@ -71,22 +71,34 @@ class USCensusAgent(BaseModel):
         self.supervisor_llm = get_supervisor_llm()
         self.formatter_llm = get_formatter_llm()
         self.tools = [real_estate_investment_tool]
-        
+        self.needs_followup = True
+        print (f'self.needs_followup: {self.needs_followup}')
         # Bind tools to LLMs for tool calling
         self.supervisor_llm_with_tools = self.supervisor_llm.bind_tools(self.tools)
         self.formatter_llm_with_tools = self.formatter_llm.bind_tools(self.tools)
-        self.graph = self.build_graph()
+        
+        print("✅ Initialization complete!")
+        
+        # Build the graph
+        self.graph = await self.build_graph()
         print("✅ USCensusAgent setup complete!")
         return self.graph
-    
+
     # --- New Workflow Nodes as staticmethods ---
     def extract_states_and_flag(self, state):
         print("🔄 Executing: extract_states_and_flag node")
-        # If states are already populated, skip extraction
+        print (f'Inside extract_states_and_flag:state["needs_followup"]: {state.get("needs_followup")}')
+        # If states are already populated, skip extraction but ensure proper routing
         existing_states = state.get("states")
         if existing_states:
             print(f"✅ States already extracted: {existing_states}, skipping re-extraction")
-            return state
+            # Determine route based on existing states
+            is_comparison = len(existing_states) > 1
+            return {
+                **state,
+                "is_comparison": is_comparison,
+                "route": "continue"  # Always continue to followup_question for proper routing
+            }
         # Extract states from the first message (original query)
         messages = state.get("messages", [])
         if not messages:
@@ -98,7 +110,7 @@ class USCensusAgent(BaseModel):
                 input_variables=["query", "context"],
                 template=MULTI_STATE_FIPS_EXTRACTION_PROMPT
             )
-            chain = multi_state_prompt | get_supervisor_llm() | JsonOutputParser()
+            chain = multi_state_prompt | self.supervisor_llm | JsonOutputParser()
             result = chain.invoke({"query": user_query, "context": FIPS_CONTEXT})
             states = result.get("states", [])
             if not states:
@@ -123,73 +135,67 @@ class USCensusAgent(BaseModel):
             **state,
             "states": states,
             "is_comparison": is_comparison,
-            "needs_followup": True  # Reset to True for new queries
         }
 
     def ask_followup_question(self, state):
         print("🔄 Executing: ask_followup_question")
         messages = state.get("messages", [])
-        
         # If we have more than one message, user has answered the followup
-        if len(messages) > 1:
-            print("[DEBUG] User has answered followup, proceeding to routing.")
+        print (f'Inside Followup Question:state["needs_followup"]: {state.get("needs_followup")}')
+        if self.needs_followup ==True:
+            # Use the original query (first message) for generating followup questions
+            user_query = messages[0].content if messages else ""
+            questions_chain = FOLLOWUP_QUESTIONS_PROMPT | self.supervisor_llm
+            result = questions_chain.invoke({"user_query": user_query})
+            question_text = result.content if hasattr(result, 'content') else str(result)
+            print("✅ Completed: ask_followup_question -> interrupting")
+            self.needs_followup = False
+            return interrupt({**state, "followup_question": question_text, "needs_followup": self.needs_followup})
+        print("[DEBUG] User has answered followup, proceeding to routing.")
+        self.needs_followup ==False
+        # Step 2: LLM parses both queries to populate 4 factors
+        user_response = messages[-1].content if len(messages) > 1 else ""
+        original_query = messages[0].content if messages else ""
+        
+        try:
+            # Use LLM to parse and populate the 4 factors
+            parsing_chain = PARSE_FOUR_FACTORS_PROMPT | self.supervisor_llm | JsonOutputParser()
+            four_factors = parsing_chain.invoke({
+                "original_query": original_query,
+                "user_response": user_response
+            })
+            print(f"[DEBUG] LLM parsed 4 factors: {four_factors}")
             
-            # Step 2: LLM parses both queries to populate 4 factors
-            user_response = messages[-1].content if len(messages) > 1 else ""
-            original_query = messages[0].content if messages else ""
+            # Extract values with defaults
+            income = four_factors.get("budget_income", "150000")
+            user_preferences = f"Family: {four_factors.get('family_situation', 'family-friendly')}, Lifestyle: {four_factors.get('lifestyle_preference', 'mixed communities')}, Growth: {four_factors.get('growth_priorities', 'balanced')}"
             
-            try:
-                # Use LLM to parse and populate the 4 factors
-                parsing_chain = PARSE_FOUR_FACTORS_PROMPT | get_supervisor_llm() | JsonOutputParser()
-                four_factors = parsing_chain.invoke({
-                    "original_query": original_query,
-                    "user_response": user_response
-                })
-                print(f"[DEBUG] LLM parsed 4 factors: {four_factors}")
-                
-                # Extract values with defaults
-                income = four_factors.get("budget_income", "150000")
-                user_preferences = f"Family: {four_factors.get('family_situation', 'family-friendly')}, Lifestyle: {four_factors.get('lifestyle_preference', 'mixed communities')}, Growth: {four_factors.get('growth_priorities', 'balanced')}"
-                
-            except Exception as e:
-                print(f"[DEBUG] Error parsing factors: {e}, using defaults")
-                income = "150000"
-                user_preferences = f"Original: {original_query}\nResponse: {user_response}"
-            
-            # Determine routing based on state
-            if state.get("route") == "non_real_estate":
-                route = "non_real_estate"
-            elif state.get("is_comparison"):
-                route = "comparison"
-            else:
-                route = "single_state"
-            
-            print(f"[DEBUG] Routing to: {route}")
-            print(f"[DEBUG] Final income: {income}")
-            
-            return {
-                **state, 
-                "needs_followup": False, 
-                "route": route,
-                "user_preferences": user_preferences,
-                "income": income
-            }
-            
-        # First time - ask the followup question
-        if not state.get('needs_followup', True):
-            print("[DEBUG] needs_followup is False, skipping followup question.")
-            return {**state, "needs_followup": False}
-            
-        # Use the original query (first message) for generating followup questions
-        user_query = messages[0].content if messages else ""
-        questions_chain = FOLLOWUP_QUESTIONS_PROMPT | get_supervisor_llm()
-        result = questions_chain.invoke({"user_query": user_query})
-        question_text = result.content if hasattr(result, 'content') else str(result)
-        print("✅ Completed: ask_followup_question -> interrupting")
-        return interrupt({**state, "followup_question": question_text, "needs_followup": False})
+        except Exception as e:
+            print(f"[DEBUG] Error parsing factors: {e}, using defaults")
+            income = "150000"
+            user_preferences = f"Original: {original_query}\nResponse: {user_response}"
+        
+        # Determine routing based on state
+        if state.get("route") == "non_real_estate":
+            route = "non_real_estate"
+        elif state.get("is_comparison"):
+            route = "comparison"
+        else:
+            route = "single_state"
+        
+        print(f"[DEBUG] Routing to: {route}")
+        print(f"[DEBUG] Final income: {income}")
+        
+        return {
+            **state, 
+            "needs_followup": self.needs_followup, 
+            "route": route,
+            "user_preferences": user_preferences,
+            "income": income
+        }
 
     def single_state_county_lookup(self, state):
-        """County lookup node for single state flow"""
+        """County lookup node for single state flow - LLM generates tool call"""
         print("🔄 Executing: single_state_county_lookup (LLM generates tool call)")
         
         state_info = state["states"][0]
@@ -199,18 +205,8 @@ class USCensusAgent(BaseModel):
             state_fips=state_info["fips_code"]
         )
         
-        print(f"[DEBUG] Single state prompt: {prompt[:200]}...")
-        
         # LLM generates tool call
         response = self.supervisor_llm_with_tools.invoke([{"role": "user", "content": prompt}])
-        
-        # Debug: Check if tool calls were generated
-        if hasattr(response, 'tool_calls') and response.tool_calls:
-            print(f"[DEBUG] Tool calls generated: {len(response.tool_calls)} calls")
-            for i, tool_call in enumerate(response.tool_calls):
-                print(f"[DEBUG] Tool call {i}: {tool_call.get('name', 'unknown')} with args: {str(tool_call.get('args', {}))[:100]}...")
-        else:
-            print("[DEBUG] ⚠️ No tool calls generated by LLM!")
         
         # Add the AI message with tool calls to state
         return {
@@ -219,7 +215,7 @@ class USCensusAgent(BaseModel):
         }
 
     def comparison_county_lookup(self, state):
-        """County lookup node for comparison flow"""
+        """County lookup node for comparison flow - LLM generates tool calls"""
         print("🔄 Executing: comparison_county_lookup (LLM generates tool calls)")
         
         state1, state2 = state["states"][:2]
@@ -241,158 +237,37 @@ class USCensusAgent(BaseModel):
             "messages": state.get("messages", []) + [response]
         }
 
-    def process_single_state_tool_results(self, state):
-        """Process single state tool call results and extract tool_output"""
-        print("🔄 Executing: process_single_state_tool_results")
-        messages = state.get("messages", [])
-        
-        # Find the last tool result for single state
-        tool_output = {}
-        tool_results = [msg for msg in messages if hasattr(msg, 'type') and msg.type == 'tool']
-        if tool_results:
-            content = tool_results[-1].content
-            # Handle both string and dict content
-            if isinstance(content, str):
-                try:
-                    import json
-                    tool_output = json.loads(content)
-                except json.JSONDecodeError:
-                    print(f"⚠️ Could not parse tool result as JSON: {content}")
-                    tool_output = {}
-            else:
-                tool_output = content if isinstance(content, dict) else {}
-        else:
-            print("⚠️ No tool results found in messages for single state")
-            
-        print(f"✅ Processed single state tool result: {type(tool_output)} with keys {list(tool_output.keys()) if isinstance(tool_output, dict) else 'N/A'}")
-        return {**state, "tool_output": tool_output}
-
-    def process_comparison_tool_results(self, state):
-        """Process comparison tool call results and extract tool_output"""
-        print("🔄 Executing: process_comparison_tool_results")
-        messages = state.get("messages", [])
-        
-        # Find tool results for comparison (should have 2 results)
-        tool_results = [msg for msg in messages if hasattr(msg, 'type') and msg.type == 'tool']
-        
-        if len(tool_results) >= 2:
-            # Extract and parse results from both tool calls
-            results = {}
-            for i, key in enumerate(['state1', 'state2']):
-                content = tool_results[-(2-i)].content if hasattr(tool_results[-(2-i)], 'content') else {}
-                # Handle both string and dict content
-                if isinstance(content, str):
-                    try:
-                        import json
-                        results[key] = json.loads(content)
-                    except json.JSONDecodeError:
-                        print(f"⚠️ Could not parse tool result as JSON for {key}: {content}")
-                        results[key] = {}
-                else:
-                    results[key] = content if isinstance(content, dict) else {}
-            tool_output = results
-        else:
-            print(f"⚠️ Expected 2 tool results for comparison, found {len(tool_results)}")
-            tool_output = {"state1": {}, "state2": {}}
-            
-        print(f"✅ Processed comparison tool results: state1 type={type(tool_output.get('state1'))}, state2 type={type(tool_output.get('state2'))}")
-        return {**state, "tool_output": tool_output}
-
     def summarize_single_state(self, state):
+        """Summarize single state results using tagging and sorting"""
         print("🔄 Executing: summarize_single_state with tagging and sorting")
-        # Extract tool results directly from messages
-        messages = state.get("messages", [])
-        tool_results = [msg for msg in messages if hasattr(msg, 'type') and msg.type == 'tool']
         
-        tool_output = {}
-        if tool_results:
-            content = tool_results[-1].content
-            if isinstance(content, str):
-                try:
-                    import json
-                    tool_output = json.loads(content)
-                except json.JSONDecodeError:
-                    print(f"⚠️ Could not parse tool result as JSON: {content}")
-            else:
-                tool_output = content if isinstance(content, dict) else {}
+        # Extract tool results from messages
+        messages = state.get("messages", [])
+        tool_output = extract_tool_results_from_messages(messages)
         
         state_info = state["states"][0]
         state_name = state_info["state_name"]
         counties = tool_output.get("data", {}).get(state_name, {}).get("data", [])
         
-        # Apply dynamic filtering and tagging system
-        if counties:
-            print(f"[DEBUG] Starting with {len(counties)} counties...")
-            
-            # Step 1: Parse user preferences and budget
-            user_preferences = state.get("user_preferences", "")
-            user_priority = self._parse_user_priority(user_preferences)
-            user_budget = int(state.get("income", "150000"))
-            tier = detect_tier(user_budget)
-            print(f"[DEBUG] User priority: {user_priority}")
-            print(f"[DEBUG] User budget: ${user_budget:,} (Tier: {tier})")
-            
-            # Step 2: Calculate state medians for tier-based scoring
-            state_medians = calculate_state_medians(counties)
-            print(f"[DEBUG] State medians: Home=${state_medians['home_value']:,.0f}, Income=${state_medians['income']:,.0f}")
-            
-            # Step 3: Apply dynamic filtering based on state medians
-            counties = apply_dynamic_filters(counties, user_priority)
-            print(f"[DEBUG] After dynamic filtering: {len(counties)} counties remain")
-            
-            # Step 4: Tag all remaining counties with 5-factor analysis
-            for county in counties:
-                county['tags'] = tag_county(county)
-                county['tags']['notable_family_feature'] = get_notable_family_feature(county)
-            print(f"[DEBUG] Applied tagging to {len(counties)} counties")
-            
-            # Step 5: Sort counties by tier-based composite score
-            counties = sort_counties_by_tags(counties, user_priority, state_medians, user_budget)
-            print(f"[DEBUG] Counties sorted by tier-based relevance score")
-            
-            # Limit to top 25 for final output
-            counties = counties[:25]
-            
-            # Update tool_output with filtered, tagged and sorted counties
-            tool_output["data"][state_name]["data"] = counties
+        # Process counties with tagging system using function from tools.py
+        user_preferences = state.get("user_preferences", "")
+        user_budget = int(state.get("income", "150000"))
+        user_priority = parse_user_priority(user_preferences)
+        state_medians = calculate_state_medians(counties)
         
-        summary = f"Top 5 counties in {state_name}: " + ", ".join([c["name"] for c in counties[:5]])
+        processed_counties = process_counties_with_tagging(
+            counties, user_priority, state_medians, user_budget
+        )
+        
+        # Update tool_output with processed counties
+        if processed_counties:
+            tool_output["data"][state_name]["data"] = processed_counties
+            summary = f"Top 5 counties in {state_name}: " + ", ".join([c["name"] for c in processed_counties[:5]])
+        else:
+            summary = f"No counties found in {state_name}"
+        
         return {**state, "summary": summary, "tool_output": tool_output}
     
-    def _parse_user_priority(self, user_preferences: str) -> dict:
-        """Parse user preferences into priority object for scoring."""
-        priority = {
-            "budget": True,  # Default to True since everyone cares about budget
-            "family": False,
-            "community_type": None,
-            "growth": False
-        }
-        
-        if not user_preferences:
-            return priority
-            
-        pref_lower = user_preferences.lower()
-        
-        # Check for family priorities
-        family_keywords = ["family", "children", "kids", "school", "safety", "child"]
-        if any(keyword in pref_lower for keyword in family_keywords):
-            priority["family"] = True
-            
-        # Check for community type preferences
-        if any(word in pref_lower for word in ["urban", "city", "downtown", "metropolitan"]):
-            priority["community_type"] = "urban"
-        elif any(word in pref_lower for word in ["suburban", "suburb", "neighborhood"]):
-            priority["community_type"] = "suburban"  
-        elif any(word in pref_lower for word in ["rural", "small town", "country", "quiet"]):
-            priority["community_type"] = "rural"
-            
-        # Check for growth/investment priorities
-        growth_keywords = ["growth", "investment", "job", "economic", "opportunity", "tech", "development"]
-        if any(keyword in pref_lower for keyword in growth_keywords):
-            priority["growth"] = True
-            
-        return priority
-
     def insights_single_state(self, state):
         print("🔄 Executing: insights_single_state (LLM-based)")
         summary = state.get("summary", "")
@@ -414,7 +289,7 @@ class USCensusAgent(BaseModel):
         tier_description = tier_descriptions.get(tier, "housing market")
         
         # Use the prompt from prompts.py
-        chain = SINGLE_STATE_INSIGHTS_PROMPT | get_formatter_llm()
+        chain = SINGLE_STATE_INSIGHTS_PROMPT | self.formatter_llm
         response = chain.invoke({
             "state_name": state_name,
             "summary": summary,
@@ -462,92 +337,46 @@ class USCensusAgent(BaseModel):
         }
 
     def summarize_comparison(self, state):
+        """Summarize comparison results using tagging and sorting"""
         print("🔄 Executing: summarize_comparison with tagging and sorting")
         
-        # First, extract tool results from messages (similar to process_comparison_tool_results)
+        # Extract tool results from messages
         messages = state.get("messages", [])
-        tool_results = [msg for msg in messages if hasattr(msg, 'type') and msg.type == 'tool']
-        
-        tool_output = {}
-        if len(tool_results) >= 2:
-            # Extract and parse results from both tool calls
-            results = {}
-            for i, key in enumerate(['state1', 'state2']):
-                content = tool_results[-(2-i)].content if hasattr(tool_results[-(2-i)], 'content') else {}
-                # Handle both string and dict content
-                if isinstance(content, str):
-                    try:
-                        import json
-                        results[key] = json.loads(content)
-                    except json.JSONDecodeError:
-                        print(f"⚠️ Could not parse tool result as JSON for {key}: {content}")
-                        results[key] = {}
-                else:
-                    results[key] = content if isinstance(content, dict) else {}
-            tool_output = results
-        else:
-            print(f"⚠️ Expected 2 tool results for comparison, found {len(tool_results)}")
-            tool_output = {"state1": {}, "state2": {}}
+        tool_output = extract_tool_results_from_messages(messages)
         
         state1, state2 = state["states"][:2]
         name1, name2 = state1["state_name"], state2["state_name"]
         counties1 = tool_output.get("state1", {}).get("data", {}).get(name1, {}).get("data", [])
         counties2 = tool_output.get("state2", {}).get("data", {}).get(name2, {}).get("data", [])
 
+        # Process counties for both states using function from tools.py
         user_preferences = state.get("user_preferences", "")
-        user_priority = self._parse_user_priority(user_preferences)
-        user_budget = int(state.get('income', 0) or 0)
-
-        # Apply dynamic filtering and tier-aware scoring for both states
-        for i, (counties, name) in enumerate([(counties1, name1), (counties2, name2)]):
-            print(f"[DEBUG] Processing state {i+1} ({name}): {len(counties)} counties found")
-            if counties:
-                state_medians = calculate_state_medians(counties)
-                print(f"[DEBUG] State medians for {name}: Home=${state_medians['home_value']:,.0f}, Income=${state_medians['income']:,.0f}")
-                
-                # Tag and score all
-                for county in counties:
-                    county['tags'] = tag_county(county)
-                    county['tags']['notable_family_feature'] = get_notable_family_feature(county)
-                
-                # Tier-aware sorting
-                counties = sorted(counties, key=lambda c: -score_county(c, user_priority, state_medians, user_budget))
-                print(f"[DEBUG] After tier-aware sorting for {name}: {len(counties)} counties")
-                
-                # Ensure we have at least 3 counties for the table
-                if len(counties) < 3:
-                    # Fallback: sort by home value and take what we have
-                    counties = sorted(counties, key=lambda c: -c.get("B25077_001E", 0))
-                    print(f"[DEBUG] Fallback applied for {name}: {len(counties)} counties available")
-                
-                # Write back
-                if i == 0:
-                    counties1 = counties[:25]  # Limit to 25 max
-                else:
-                    counties2 = counties[:25]  # Limit to 25 max
-            else:
-                print(f"[DEBUG] No counties found for {name}")
-                # Set empty but ensure structure exists
-                if i == 0:
-                    counties1 = []
-                else:
-                    counties2 = []
+        user_budget = int(state.get("income", "150000"))
+        user_priority = parse_user_priority(user_preferences)
+        
+        # Calculate state medians for each state separately
+        state_medians1 = calculate_state_medians(counties1) if counties1 else {}
+        state_medians2 = calculate_state_medians(counties2) if counties2 else {}
+        
+        processed_counties1 = process_counties_with_tagging(
+            counties1, user_priority, state_medians1, user_budget
+        )
+        processed_counties2 = process_counties_with_tagging(
+            counties2, user_priority, state_medians2, user_budget
+        )
 
         # Update tool_output
-        if counties1:
-            tool_output["state1"]["data"][name1]["data"] = counties1
-        if counties2:
-            tool_output["state2"]["data"][name2]["data"] = counties2
+        if processed_counties1:
+            tool_output["state1"]["data"][name1]["data"] = processed_counties1
+        if processed_counties2:
+            tool_output["state2"]["data"][name2]["data"] = processed_counties2
 
-        # Generate summary with safety checks
-        counties1_names = [c.get("name", "Unknown County") for c in counties1[:3]] if counties1 else ["No data available"]
-        counties2_names = [c.get("name", "Unknown County") for c in counties2[:3]] if counties2 else ["No data available"]
+        # Generate summary
+        counties1_names = [c.get("name", "Unknown County") for c in processed_counties1[:3]] if processed_counties1 else ["No data available"]
+        counties2_names = [c.get("name", "Unknown County") for c in processed_counties2[:3]] if processed_counties2 else ["No data available"]
         
         summary = f"Top 3 counties in {name1}: " + ", ".join(counties1_names)
         summary += f" | Top 3 counties in {name2}: " + ", ".join(counties2_names)
-        
-        print(f"[DEBUG] Final summary: {summary}")
-        print(f"[DEBUG] Counties1 count: {len(counties1)}, Counties2 count: {len(counties2)}")
         
         return {**state, "summary": summary, "tool_output": tool_output}
 
@@ -572,7 +401,7 @@ class USCensusAgent(BaseModel):
         tier_description = tier_descriptions.get(tier, "housing market")
         
         # Use the prompt from prompts.py
-        chain = COMPARISON_INSIGHTS_PROMPT | get_formatter_llm()
+        chain = COMPARISON_INSIGHTS_PROMPT | self.formatter_llm
         response = chain.invoke({
             "state1": name1,
             "state2": name2,
@@ -637,46 +466,36 @@ class USCensusAgent(BaseModel):
             "final_result": final_report
         }
 
-    
-
-
-
-    def build_graph(self):
+    async def build_graph(self):
+        """Builds the LangGraph workflow."""
+        # If not initialized yet, call setup_graph
+        if self.tools is None or self.supervisor_llm is None:
+            await self.setup_graph()
+            return self.graph
+            
         graph = StateGraph(AgentState)
         
-        # Create separate ToolNodes for each flow
-        print("🔄 Creating ToolNodes for each flow")        
-        self.single_state_tool_node = ToolNode(self.tools)
-        self.comparison_tool_node = ToolNode(self.tools)
+        # Create a single ToolNode for executing tools
+        tool_node = ToolNode(self.tools)
 
-        #Common nodes for all three flows
+        # Add all nodes to the graph
         graph.add_node("extract_states", self.extract_states_and_flag)
         graph.add_node("followup_question", self.ask_followup_question)
-        
-        # Separate county lookup nodes for independent flows
         graph.add_node("single_state_county_lookup", self.single_state_county_lookup)
         graph.add_node("comparison_county_lookup", self.comparison_county_lookup)
-        
-        # Separate tool nodes for each flow
-        graph.add_node("single_state_tools", self.single_state_tool_node)
-        graph.add_node("comparison_tools", self.comparison_tool_node)
-        
-        # Downstream processing nodes (no separate processing nodes)
+        graph.add_node("tools", tool_node)
         graph.add_node("summarize_single_state", self.summarize_single_state)
         graph.add_node("insights_single_state", self.insights_single_state)
         graph.add_node("assemble_single_state", self.assemble_single_state)
         graph.add_node("summarize_comparison", self.summarize_comparison)
         graph.add_node("insights_comparison", self.insights_comparison)
         graph.add_node("assemble_comparison", self.assemble_comparison)
-
-        #Exception path (non supported usecases)
         graph.add_node("handle_non_real_estate", self.handle_non_real_estate)
         
-        #EXECUTION FLOW
-        #Entry point
+        # Entry point
         graph.set_entry_point("extract_states")
         
-        # Handle routing from extract_states
+        # Routing from extract_states
         graph.add_conditional_edges(
             "extract_states",
             lambda state: state.get("route", "continue"),
@@ -686,6 +505,7 @@ class USCensusAgent(BaseModel):
             }
         )
         
+        # Routing from followup_question
         graph.add_conditional_edges(
             "followup_question",
             lambda state: state.get("route", "continue"),
@@ -693,28 +513,16 @@ class USCensusAgent(BaseModel):
                 "single_state": "single_state_county_lookup",
                 "comparison": "comparison_county_lookup", 
                 "non_real_estate": "handle_non_real_estate",
-                "continue": "followup_question"  # Loop back for interrupt handling
+                "continue": "followup_question"
             }
         )
         
-        # County lookup to tools connections  
-        def debug_tools_condition(state):
-            """Debug wrapper for tools_condition"""
-            result = tools_condition(state)
-            print(f"[DEBUG] tools_condition result: {result}")
-            messages = state.get("messages", [])
-            if messages:
-                last_msg = messages[-1]
-                print(f"[DEBUG] Last message type: {type(last_msg)}")
-                if hasattr(last_msg, 'tool_calls'):
-                    print(f"[DEBUG] Last message has tool_calls: {len(last_msg.tool_calls) if last_msg.tool_calls else 0}")
-            return result
-            
+        # County lookup to tools using tools_condition from langgraph.prebuilt
         graph.add_conditional_edges(
             "single_state_county_lookup",
-            debug_tools_condition,
+            tools_condition,
             {
-                "tools": "single_state_tools",
+                "tools": "tools",
                 END: END
             }
         )
@@ -723,93 +531,33 @@ class USCensusAgent(BaseModel):
             "comparison_county_lookup",
             tools_condition,
             {
-                "tools": "comparison_tools",
+                "tools": "tools",
                 END: END
             }
         )
 
-        # Tool nodes check if more tools need to be called
+        # Tool execution routing with debug logging
+        def route_after_tools(state):
+            is_comparison = state.get("is_comparison", False)
+            route = "comparison" if is_comparison else "single_state"
+            print(f"🔀 Tool routing: is_comparison={is_comparison} → route={route}")
+            return route
+            
         graph.add_conditional_edges(
-            "single_state_tools",
-            tools_condition,
+            "tools",
+            route_after_tools,
             {
-                "tools": "single_state_tools",  # Loop back if more tools to call
-                "__end__": "summarize_single_state"  # Move to summarize when done
-            }
-        )
-        
-        graph.add_conditional_edges(
-            "comparison_tools",
-            tools_condition,
-            {
-                "tools": "comparison_tools",  # Loop back if more tools to call
-                "__end__": "summarize_comparison"  # Move to summarize when done
+                "single_state": "summarize_single_state",
+                "comparison": "summarize_comparison"
             }
         )
 
-        # Single state execution flow
+        # Single state flow
         graph.add_edge("summarize_single_state", "insights_single_state")
         graph.add_edge("insights_single_state", "assemble_single_state")
 
-        # Comparison state execution flow
+        # Comparison flow
         graph.add_edge("summarize_comparison", "insights_comparison")
         graph.add_edge("insights_comparison", "assemble_comparison")
         
         return graph.compile(checkpointer=checkpointer)
-
-def setup_and_build_graph():
-    """
-    Helper function to create a USCensusAgent and set up its graph.
-    This handles the async setup properly.
-    """
-    import asyncio
-    
-    async def _setup():
-        agent = USCensusAgent()
-        graph = await agent.setup_graph()
-        return agent, graph
-    
-    # If we're already in an async context, return the coroutine
-    try:
-        loop = asyncio.get_running_loop()
-        # We're in an async context, can't use asyncio.run
-        return asyncio.create_task(_setup())
-    except RuntimeError:
-        # No running loop, we can use asyncio.run
-        return asyncio.run(_setup())
-
-# For testing, you can instantiate and run this new workflow graph
-us_census_agent = USCensusAgent()
-
-# Create a function that returns the setup graph for import
-async def get_new_workflow_graph():
-    """Get the workflow graph with proper async setup"""
-    if not us_census_agent.graph:
-        await us_census_agent.setup_graph()
-    return us_census_agent.graph
-
-# For backwards compatibility, create a sync version
-def get_workflow_graph_sync():
-    """Get the workflow graph using sync setup"""
-    import asyncio
-    try:
-        loop = asyncio.get_running_loop()
-        # We're in an async context, return None and let caller handle async
-        return None
-    except RuntimeError:
-        # No running loop, we can use asyncio.run
-        async def _setup():
-            if not us_census_agent.graph:
-                await us_census_agent.setup_graph()
-            return us_census_agent.graph
-        return asyncio.run(_setup())
-
-# Try to create the graph for backwards compatibility
-try:
-    new_workflow_graph = get_workflow_graph_sync()
-except Exception as e:
-    print(f"Note: Async setup required. Use 'await get_new_workflow_graph()' or 'await us_census_agent.setup_graph()'")
-    new_workflow_graph = None
-
-# At the end, expose both for import
-__all__ = ["us_census_agent", "checkpointer", "new_workflow_graph", "get_new_workflow_graph", "setup_and_build_graph"]
