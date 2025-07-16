@@ -1,11 +1,12 @@
 requests==2.31.0
 pandas==2.1.4
 python-dotenv==1.0.0 
-langgraph
+langgraph==0.4.8
 langchain
 langchain-google-genai
 faiss-cpu
 langchain-huggingface
-gradio
+gradio>=4.44.0
 spacy
 numpy>=1.26.0
+markdown

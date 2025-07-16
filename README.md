@@ -1,102 +1,158 @@
-# US Census Language Data API
+---
+title: FamilyHomeFinder
+app_file: app.py
+sdk: gradio
+sdk_version: 4.0.0
+---
+Here’s a comprehensive `README.md` for your project based on the provided files and code. This README aims to make it easy for anyone (including yourself, weeks or months from now) to understand the architecture, workflow, and how to run or extend the code.
 
-A simple Python script to connect to the US Census API and pull population data by state by language speaking.
+---
 
-## Features
+# 🏡 Real Estate Agent Routing Workflow
 
-- Fetches language data from the American Community Survey (ACS)
-- No API key required for basic data access
-- Supports both summary and detailed language breakdowns
-- Returns data in JSON format
-- Includes pandas DataFrame conversion for analysis
+A **prototype implementation** of Anthropic’s Agent Routing and Workflow framework, focused on real estate recommendation and comparison for U.S. homebuyers using modern LLMs and multi-agent orchestration (LangGraph).
 
-## Installation
+This system intelligently **routes user queries** to the right workflow (single-state report, multi-state comparison, or fallback), asks follow-up questions for missing info, fetches data from the U.S. Census, and assembles detailed, visual-rich reports—leveraging LLM prompt engineering and external tools.
 
-1. Install the required dependencies:
+---
+
+## ✨ Key Features
+
+* **LLM Orchestration:** Uses Gemini (Google Generative AI) models to analyze and route queries, generate follow-up questions, and assemble natural language reports.
+* **Agent Routing:** Distinguishes between single-state and multi-state/comparison queries, with a fallback for off-topic questions.
+* **Tool-Enhanced:** Calls real estate analysis tools to fetch and process county-level Census data (home value, income, education, etc.).
+* **Image Integration:** Pulls in county/city images from Unsplash, Pexels, Google Images, and Wikipedia for highly visual outputs.
+* **Interactive Follow-up:** Detects missing key factors (budget, family, lifestyle, growth) and prompts the user for additional details before proceeding.
+* **Auto-formatting:** Rich markdown reports with tables, emojis, key takeaways, and “Why you’ll love it” summaries.
+
+---
+
+## 📁 Project Structure
+
+```
+.
+├── models.py          # LLM setup (Gemini) for supervisor/formatter roles
+├── prompts.py         # All prompt templates and instructions for LLMs
+├── tools.py           # Real estate data tools, scoring, image fetching, county processing
+├── html_formatting.py # HTML report generation and formatting utilities
+├── build_graph.py     # Core agent workflow/graph orchestration (LangGraph)
+├── app.py             # Gradio web interface
+├── cli_app.py         # Command-line interface
+└── (data, secrets, etc.)
+```
+
+---
+
+## 🚀 How It Works
+
+1. **User Input:** User asks a real estate question (e.g., “Best places to buy a home in Texas vs. Florida for my family?”).
+2. **State Extraction:** System uses LLM prompt to parse U.S. state names and decide if it’s a comparison or single-state query.
+3. **Follow-up (if needed):** If info is missing (budget, family, etc.), asks targeted, conversational follow-up questions.
+4. **Workflow Routing:**
+
+   * **Comparison:** If multiple states, triggers dual tool calls and a comparison workflow.
+   * **Single State:** If only one state, routes to the single-state tool/report workflow.
+   * **Non-Real Estate:** If off-topic, responds with a friendly message about supported queries.
+5. **Tool Calls & Data Fetch:** Queries the U.S. Census and other sources for up-to-date county-level data. Images are fetched via Unsplash/Pexels/Google/Wikipedia APIs.
+6. **Scoring & Tagging:** Counties are ranked using affordability, family-friendliness, economic vitality, and more. Each is tagged for features like “great schools” or “luxury housing.”
+7. **Rich Output:** Final reports are beautifully formatted in markdown (or HTML), including tables, summaries, images, and actionable advice.
+
+---
+
+## 🛠️ Setup & Usage
+
+### 1. Clone & Install
+
 ```bash
+git clone <this-repo>
+cd <this-repo>
 pip install -r requirements.txt
 ```
 
-## Usage
+### 2. Set Environment Variables
 
-### Basic Usage
+Create a `.env` file with your API keys:
 
-Run the main script to get language data for all states:
-
-```bash
-python census_api.py
+```
+GOOGLE_API_KEY=your_gemini_key
+CENSUS_API_KEY=your_census_api_key
+UNSPLASH_ACCESS_KEY=your_unsplash_key
+PEXELS_API_KEY=your_pexels_key
+SERPER_API_KEY=your_serper_key  # Google Images (Serper) for richer image results
 ```
 
-### Example Usage
+### 3. Run the Agent Workflow
 
-Run the example script for a formatted output:
-
-```bash
-python example_usage.py
-```
-
-### Programmatic Usage
+All orchestration is in `build_Graph.py` (see the `USCensusAgent` class and the async `setup_graph()` method). Typical usage in an async context:
 
 ```python
-from census_api import CensusAPI
+from build_Graph import USCensusAgent
+import asyncio
 
-# Initialize the API client
-census = CensusAPI()
-
-# Get language data by state for 2021
-result = census.get_language_by_state(2021)
-
-if result["success"]:
-    print(f"Retrieved data for {result['total_states']} states")
-    
-    # Access the data
-    for state in result["data"]:
-        state_name = state["NAME"]
-        total_pop = state["B16001_001E"]
-        english_only = state["B16001_002E"]
-        spanish = state["B16001_003E"]
-        print(f"{state_name}: {total_pop} total, {english_only} English only, {spanish} Spanish")
+agent = USCensusAgent()
+graph = asyncio.run(agent.setup_graph())
+# ...then invoke with user queries/messages as needed!
 ```
 
-## Data Variables
+---
 
-The script fetches the following language variables from the ACS:
+## 🧠 File-by-File Summary
 
-- `B16001_001E`: Total population 5 years and over
-- `B16001_002E`: Speak only English
-- `B16001_003E`: Speak Spanish
-- `B16001_006E`: Speak other Indo-European languages
-- `B16001_009E`: Speak Asian and Pacific Island languages
-- `B16001_012E`: Speak other languages
+* **models.py**
+  Loads LLMs (Gemini) for supervisor and formatter agent roles.
+* **prompts.py**
+  All the complex prompt templates for routing, follow-up, state extraction, and insights.
+* **tools.py**
+  Handles:
 
-## Output Files
+  * Real estate data fetch (U.S. Census API)
+  * County/city image search (Unsplash, Pexels, Google Images, Wikipedia)
+  * County scoring and tiering
+  * Parsing user preferences
+  * Utility functions for filtering/tagging counties
+* **html_formatting.py**
+  Generates all HTML reports and tables for the web app. Includes key takeaways, tables, emoji summaries, and fallback notes.
+* **build_graph.py**
+  Orchestrates the entire workflow as a LangGraph. Defines workflow nodes, routing conditions, follow-up/question logic, and calls out to the right tools and HTML formatting at each step.
 
-- `census_language_data.json`: Raw API response data
-- `census_language_by_state.json`: Formatted state-by-state data
+---
 
-## API Endpoints
+## 🧩 Extending or Customizing
 
-The script uses the following Census API endpoints:
+* **Add new tools:** Plug in new data sources or analytics in `tools.py`.
+* **Edit prompts:** Tweak how the LLM interprets/routes or assembles outputs via `prompts.py`.
+* **Change report look:** Modify `formatting.py` for new sections, themes, or front-end integration.
+* **Workflow logic:** For new agent types or more sophisticated routing, extend `build_Graph.py`.
 
-- **Base URL**: `https://api.census.gov/data`
-- **ACS 5-year estimates**: `/{year}/acs/acs5`
-- **Geographic level**: State-level data (`for=state:*`)
+---
 
-## Notes
+## 📝 Example Query
 
-- No API key is required for basic ACS data access
-- Data is from the American Community Survey 5-year estimates
-- Latest available year is typically 2021 (5-year estimates lag by 2-3 years)
-- All population counts are for people 5 years and older
+> “Find me a good place to buy a house in West Virginia, with good schools and city amenities.”
 
-## Error Handling
+**Workflow:**
 
-The script includes comprehensive error handling for:
-- Network connection issues
-- API rate limiting
-- Invalid parameters
-- Missing data
+* Extracts “West Virginia” and FIPS code
+* Detects missing info (budget/family size), asks follow-up
+* Fetches county data, pulls images, tags/ranks top options
+* Returns a markdown/HTML report with 3–5 counties, key stats, images, and friendly advice
 
-## License
+---
 
-This project is open source and available under the MIT License. 
+## 📚 References
+
+* [LangGraph Docs](https://langgraph.dev/)
+* [LangChain Docs](https://python.langchain.com/)
+* [US Census API](https://www.census.gov/data/developers/data-sets.html)
+* [Gemini (Google Generative AI)](https://ai.google.dev/)
+
+---
+
+## 👋 Author & License
+
+*Prototype by \[your name or team]*.
+This project is for demonstration and prototyping purposes only.
+
+---
+
+Let me know if you want a *QUICK START* or *DEVELOPER NOTES* section added!
