@@ -25,6 +25,9 @@ async def generate_report(analysis_type, state1, state2, income, family_size,
                          lifestyle, priorities, progress=gr.Progress()):
     """Generate real estate report based on user inputs"""
     
+    # Reset progress tracking for new report
+    progress(0, desc="🔄 Starting new analysis...")
+    
     # Validation
     if not state1:
         return "❌ Please select at least one state for analysis."
@@ -292,7 +295,7 @@ def create_interface():
                     if analysis_type_val == "Single State Analysis":
                         is_valid = bool(state1_val)
                         status = "Ready to generate report!" if is_valid else "Please select a state"
-                        return gr.Dropdown(interactive=False), status
+                        return gr.Dropdown(value="None", interactive=False), status
                     else:
                         is_valid = bool(state1_val) and bool(state2_val) and state2_val != "None" and state1_val != state2_val
                         status = "Ready to generate report!" if is_valid else "Please select two different states"
@@ -318,8 +321,8 @@ def create_interface():
             with gr.Column(scale=2):
                 gr.Markdown("## 📊 Real Estate Analysis Report")
                 
-                # Report output area with integrated tiles
-                report_output = gr.HTML(
+                # PERSISTENT TILES SECTION - Always visible
+                tiles_output = gr.HTML(
                     value="""
 <div class="welcome-container">
     <div class="welcome-header">
@@ -362,6 +365,12 @@ def create_interface():
     </div>
 </div>
                     """,
+                    elem_classes=["tiles-container"]
+                )
+                
+                # SEPARATE REPORT CONTENT AREA
+                report_output = gr.HTML(
+                    value="",
                     elem_classes=["report-container"]
                 )
         
@@ -386,6 +395,24 @@ def create_interface():
                             triggerBtn.click();
                         };
                     }
+                    
+                    // Re-attach click handler after any DOM updates
+                    const observer = new MutationObserver(() => {
+                        const topCountiesCard = document.getElementById('top-counties-card');
+                        const triggerBtn = document.getElementById('top-counties-trigger');
+                        
+                        if (topCountiesCard && triggerBtn && !topCountiesCard.onclick) {
+                            topCountiesCard.style.cursor = 'pointer';
+                            topCountiesCard.onclick = () => {
+                                triggerBtn.click();
+                            };
+                        }
+                    });
+                    
+                    observer.observe(document.body, {
+                        childList: true,
+                        subtree: true
+                    });
                 }, 1000);
                 return [];
             }
@@ -419,14 +446,24 @@ def create_interface():
         
         # Enhanced CSS with tile styling
         demo.css = """
-        .report-container {
+        .tiles-container {
             background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);
             padding: 0;
             border-radius: 12px;
             border: 1px solid #e2e8f0;
-            min-height: 600px;
+            margin-bottom: 20px;
             font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
             overflow: hidden;
+        }
+        
+        .report-container {
+            background: white;
+            padding: 0;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
+            overflow: hidden;
+            min-height: 200px;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
         }
         
         /* Welcome Screen Styling */

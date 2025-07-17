@@ -1,5 +1,5 @@
 from datetime import datetime
-from tools import get_county_images
+from data_sources.image_apis import get_county_images
 import markdown
 
 def clean_markdown_to_html(text):
@@ -280,12 +280,7 @@ def format_single_state_html_report(state_name, income, counties, insights, reco
         """
     
     # Generate insights section with conditional safety disclaimer
-    safety_disclaimer = '''
-        <div class="safety-disclaimer">
-            <h4>🔒 About Safety Data</h4>
-            <p><small>Safety scores are calculated from FBI Uniform Crime Reporting data and represent rates relative to national averages. Crime data is state-level, adjusted by county population size. Always verify current local conditions and consider visiting neighborhoods at different times to assess your comfort level. Contact local law enforcement for the most current information.</small></p>
-        </div>
-        ''' if has_crime_data else ''
+    safety_disclaimer = '' if has_crime_data else ''
     
     insights_html = f"""
     <div class="insights-section">
@@ -321,7 +316,7 @@ def format_single_state_html_report(state_name, income, counties, insights, reco
             {insights_html}
             
             <div class="report-footer">
-                <p><small>📊 Data Sources: 2022 U.S. Census ACS{', FBI Uniform Crime Reporting' if has_crime_data else ''} • Images: Unsplash, Pexels, Wikipedia</small></p>
+                <p><small>📊 Data Sources: 2022 U.S. Census ACS • Images: Unsplash, Pexels, Wikipedia</small></p>
             </div>
         </div>
     </div>
@@ -652,12 +647,7 @@ def format_comparison_html_report(name1, name2, income, counties1, counties2, in
     counties2_html = generate_state_counties_html(name2, counties2[:3], used_urls)
     
     # Safety disclaimer
-    safety_disclaimer = '''
-                <div class="safety-disclaimer">
-                    <h4>🔒 About Safety Data</h4>
-                    <p><small>Safety scores are calculated from FBI Uniform Crime Reporting data and represent rates relative to national averages. Crime data is state-level, adjusted by county population size. Always verify current local conditions and consider visiting neighborhoods at different times to assess your comfort level. Contact local law enforcement for the most current information.</small></p>
-                </div>
-                ''' if has_crime_data else ''
+    safety_disclaimer = ''
     
     # Complete HTML report
     html_report = f"""
@@ -693,7 +683,7 @@ def format_comparison_html_report(name1, name2, income, counties1, counties2, in
             </div>
             
             <div class="report-footer">
-                <p><small>📊 Data Sources: 2022 U.S. Census ACS{', FBI Uniform Crime Reporting' if has_crime_data else ''} • Images: Unsplash, Pexels, Wikipedia</small></p>
+                <p><small>📊 Data Sources: 2022 U.S. Census ACS • Images: Unsplash, Pexels, Wikipedia</small></p>
             </div>
         </div>
     </div>

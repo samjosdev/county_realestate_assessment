@@ -14,7 +14,12 @@ from prompts import (
     SINGLE_STATE_TOOL_CALL_PROMPT,
     COMPARISON_TOOL_CALL_PROMPT,
 )
-from tools import real_estate_investment_tool, process_counties_with_tagging, extract_tool_results_from_messages, detect_tier, parse_user_priority, calculate_state_medians
+# Import from new modular structure
+from tools import real_estate_investment_tool
+from scoring.filtering import process_counties_with_tagging
+from utils.data_processing import extract_tool_results_from_messages
+from scoring.county_scoring import detect_tier, calculate_state_medians
+from utils.user_preferences import parse_user_priority
 from langgraph.prebuilt import tools_condition, ToolNode
 from html_formatting import format_single_state_html_report, format_comparison_html_report
 
@@ -140,7 +145,12 @@ class USCensusAgent(BaseModel):
         
         state_info = state["states"][0]
         state_name = state_info["state_name"]
-        counties = tool_output.get("data", {}).get(state_name, {}).get("data", [])
+        
+        # Handle case where tool_output might be a list
+        if isinstance(tool_output, list):
+            counties = tool_output
+        else:
+            counties = tool_output.get("data", {}).get(state_name, {}).get("data", [])
         
         # Process counties with tagging system using function from tools.py
         user_preferences = state.get("user_preferences", "")
