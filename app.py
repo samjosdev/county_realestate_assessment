@@ -291,30 +291,44 @@ def create_interface():
                 )
                 
                 # Form validation logic
-                def update_state2_and_status(analysis_type_val, state1_val, state2_val):
+                def update_state2_interactive(analysis_type_val):
+                    """Update state2 dropdown interactivity based on analysis type"""
+                    if analysis_type_val == "Single State Analysis":
+                        return gr.Dropdown(value="None", interactive=False)
+                    else:
+                        return gr.Dropdown(interactive=True)
+                
+                def update_status(analysis_type_val, state1_val, state2_val):
+                    """Update status text based on current selections"""
                     if analysis_type_val == "Single State Analysis":
                         is_valid = bool(state1_val)
-                        status = "Ready to generate report!" if is_valid else "Please select a state"
-                        return gr.Dropdown(value="None", interactive=False), status
+                        return "Ready to generate report!" if is_valid else "Please select a state"
                     else:
                         is_valid = bool(state1_val) and bool(state2_val) and state2_val != "None" and state1_val != state2_val
-                        status = "Ready to generate report!" if is_valid else "Please select two different states"
-                        return gr.Dropdown(interactive=True), status
+                        return "Ready to generate report!" if is_valid else "Please select two different states"
                 
+                # Update state2 interactivity when analysis type changes
                 analysis_type.change(
-                    update_state2_and_status,
+                    update_state2_interactive,
+                    inputs=[analysis_type],
+                    outputs=[state2]
+                )
+                
+                # Update status when any relevant input changes
+                analysis_type.change(
+                    update_status,
                     inputs=[analysis_type, state1, state2],
-                    outputs=[state2, status_text]
+                    outputs=[status_text]
                 )
                 state1.change(
-                    update_state2_and_status,
+                    update_status,
                     inputs=[analysis_type, state1, state2],
-                    outputs=[state2, status_text]
+                    outputs=[status_text]
                 )
                 state2.change(
-                    update_state2_and_status,
+                    update_status,
                     inputs=[analysis_type, state1, state2],
-                    outputs=[state2, status_text]
+                    outputs=[status_text]
                 )
             
             # RIGHT PANEL - Reports with Tiles
