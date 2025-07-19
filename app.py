@@ -286,7 +286,7 @@ def create_interface():
                 
                 # Status indicator
                 status_text = gr.Markdown(
-                    value="Configure your preferences above, then click 'Top Counties' to generate your report.",
+                    value="Configure your preferences above, then click 'Generate Report' to get started.",
                     elem_classes=["status-indicator"]
                 )
                 
@@ -327,7 +327,7 @@ def create_interface():
 <div class="welcome-container">
     <div class="welcome-header">
         <h2>🏡 Welcome to FamilyHomeFinder!</h2>
-        <p>Configure your preferences on the left and click "Top Counties" to get started.</p>
+        <p>Configure your preferences on the left and click "Generate Report" to get started.</p>
     </div>
     
     <div class="features-grid">
@@ -368,60 +368,22 @@ def create_interface():
                     elem_classes=["tiles-container"]
                 )
                 
+                # GENERATE REPORT BUTTON - Below tiles
+                generate_btn = gr.Button(
+                    "🚀 Generate Report",
+                    variant="primary",
+                    size="lg",
+                    elem_classes=["generate-btn"]
+                )
+                
                 # SEPARATE REPORT CONTENT AREA
                 report_output = gr.HTML(
                     value="",
                     elem_classes=["report-container"]
                 )
         
-        # Create invisible buttons for each tile
-        top_counties_btn = gr.Button(visible=False, elem_id="top-counties-trigger")
-        market_btn = gr.Button(visible=False)
-        investment_btn = gr.Button(visible=False) 
-        family_btn = gr.Button(visible=False)
-        
-        # JavaScript to handle tile clicks
-        demo.load(
-            fn=None,
-            js="""
-            function() {
-                setTimeout(() => {
-                    const topCountiesCard = document.getElementById('top-counties-card');
-                    const triggerBtn = document.getElementById('top-counties-trigger');
-                    
-                    if (topCountiesCard && triggerBtn) {
-                        topCountiesCard.style.cursor = 'pointer';
-                        topCountiesCard.onclick = () => {
-                            triggerBtn.click();
-                        };
-                    }
-                    
-                    // Re-attach click handler after any DOM updates
-                    const observer = new MutationObserver(() => {
-                        const topCountiesCard = document.getElementById('top-counties-card');
-                        const triggerBtn = document.getElementById('top-counties-trigger');
-                        
-                        if (topCountiesCard && triggerBtn && !topCountiesCard.onclick) {
-                            topCountiesCard.style.cursor = 'pointer';
-                            topCountiesCard.onclick = () => {
-                                triggerBtn.click();
-                            };
-                        }
-                    });
-                    
-                    observer.observe(document.body, {
-                        childList: true,
-                        subtree: true
-                    });
-                }, 1000);
-                return [];
-            }
-            """,
-            outputs=[]
-        )
-        
-        # Top Counties button click handler
-        top_counties_btn.click(
+        # Generate Report button click handler
+        generate_btn.click(
             fn=lambda: ("🔄 Generating your real estate report...", "Generating..."),
             outputs=[status_text, report_output],
             queue=False
@@ -444,7 +406,7 @@ def create_interface():
                 queue=False
             )
         
-        # Enhanced CSS with tile styling
+        # Enhanced CSS with tile styling and button styling
         demo.css = """
         .tiles-container {
             background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);
@@ -454,6 +416,25 @@ def create_interface():
             margin-bottom: 20px;
             font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
             overflow: hidden;
+        }
+        
+        .generate-btn {
+            margin: 20px 0 !important;
+            background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%) !important;
+            border: none !important;
+            color: white !important;
+            font-weight: 600 !important;
+            font-size: 1.1em !important;
+            padding: 16px 32px !important;
+            border-radius: 12px !important;
+            box-shadow: 0 4px 15px rgba(34, 197, 94, 0.3) !important;
+            transition: all 0.3s ease !important;
+        }
+        
+        .generate-btn:hover {
+            transform: translateY(-2px) !important;
+            box-shadow: 0 8px 25px rgba(34, 197, 94, 0.4) !important;
+            background: linear-gradient(135deg, #16a34a 0%, #15803d 100%) !important;
         }
         
         .report-container {
@@ -505,18 +486,11 @@ def create_interface():
         .active-card {
             border: 2px solid #22c55e;
             box-shadow: 0 8px 25px rgba(34, 197, 94, 0.15);
-            cursor: pointer;
         }
         
         .disabled-card {
             opacity: 0.6;
             background: #f8f9fa;
-            cursor: not-allowed;
-        }
-        
-        .feature-card:hover.active-card {
-            transform: translateY(-2px);
-            box-shadow: 0 12px 30px rgba(34, 197, 94, 0.2);
         }
         
         .feature-icon {
@@ -569,10 +543,6 @@ def create_interface():
             color: #475569;
             margin: 0;
             font-size: 0.95em;
-        }
-        
-        #top-counties-trigger {
-            display: none !important;
         }
         
         /* Professional Report Styling */

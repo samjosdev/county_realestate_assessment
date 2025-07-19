@@ -1,3 +1,9 @@
+---
+title: FamilyHomeFinder
+app_file: app.py
+sdk: gradio
+sdk_version: 4.0.0
+---
 # 🏡 FamilyHomeFinder
 
 **Your Data-Driven Guide to the Best Places to Live**
